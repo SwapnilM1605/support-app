@@ -1,0 +1,148 @@
+<!-- templates/dashboard.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Support Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <h2>Support Dashboard</h2>
+      <p>Shows captured support emails and classification. Click a row to view details / respond.</p>
+      <a href="{{ url_for('categories_auth') }}" class="btn btn-primary mb-3">Manage Teams & Categories</a>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, msg in messages %}
+            <div class="alert alert-{{ category }}">{{ msg }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Received</th>
+            <th>Sender</th>
+            <th>Subject</th>
+            <th>Category</th>
+            <th>Team Assigned</th>
+            <th>Status</th>
+            <th>Messages</th>
+            <th>Action</th>
+            <th>Assign</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in items %}
+            <tr>
+              <td>{{ entry.item.customer_mail_id }}</td>
+              <td>{{ entry.item.timestamps.strftime('%Y-%m-%d %H:%M') }}</td>
+              <td>{{ entry.item.sender }}</td>
+              <td>
+                <a href="{{ url_for('view_request', row_id=entry.item.customer_mail_id) }}">
+                  {{ entry.item.subject|truncate(60) }}
+                  {% if entry.item.thread_id %}
+                    <span class="badge badge-info">
+                      Thread ({{ entry.thread_count }})
+                    </span>
+                  {% endif %}
+                </a>
+              </td>
+              <!-- Category column -->
+              <td>
+                <form action="{{ url_for('update_row') }}" method="post" class="form-inline">
+                  <input type="hidden" name="id" value="{{ entry.item.customer_mail_id }}">
+                  <select name="category" class="form-control form-control-sm category-select" 
+                          data-team="{{ entry.item.team_assigned }}" 
+                          id="category-{{ entry.item.customer_mail_id }}">
+                    <option value="{{ entry.item.category }}">{{ entry.item.category or 'Select' }}</option>
+                    {% if entry.item.team_assigned %}
+                      {% for c in category_lookup[entry.item.team_assigned] %}
+                        <option value="{{ c }}">{{ c }}</option>
+                      {% endfor %}
+                    {% endif %}
+                  </select>
+              </td>
+              <!-- Team Assigned column -->
+              <td>
+                  <select name="team" class="form-control form-control-sm team-select" 
+                          data-rowid="{{ entry.item.customer_mail_id }}" style="min-width: 140px;">
+                    <option value="{{ entry.item.team_assigned }}">{{ entry.item.team_assigned or 'Select' }}</option>
+                    {% for team in teams %}
+                      <option value="{{ team }}">{{ team }}</option>
+                    {% endfor %}
+                  </select>
+              </td>
+              <!-- Status column -->
+              <td>
+                <form action="{{ url_for('update_row') }}" method="post" class="form-inline">
+                  <input type="hidden" name="id" value="{{ entry.item.customer_mail_id }}">
+                  <select name="status" class="form-control form-control-sm" style="min-width: 140px;">
+                    <option value="pending" {% if entry.item.status == 'pending' %}selected{% endif %}>Pending</option>
+                    <option value="in progress" {% if entry.item.status == 'in progress' %}selected{% endif %}>In Progress</option>
+                    <option value="waiting for response" {% if entry.item.status == 'waiting for response' %}selected{% endif %}>Waiting For Response</option>
+                    <option value="escalated" {% if entry.item.status == 'escalated' %}selected{% endif %}>Escalated</option>
+                    <option value="resolved" {% if entry.item.status == 'resolved' %}selected{% endif %}>Resolved</option>
+                  </select>
+              </td>
+              <!-- Message count column -->
+              <td>
+                {{ entry.thread_count }}
+              </td>
+              <!-- Action column -->
+              <td>
+                  <button class="btn btn-sm btn-primary" type="submit">Update</button>
+                </form>
+              </td>
+              <!-- Assign column -->
+              <td>
+                <form action="{{ url_for('assign_to_team', row_id=entry.item.customer_mail_id) }}" method="post">
+                  <button class="btn btn-sm btn-secondary" type="submit">Assign</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <script>
+      // Convert Flask template data to JavaScript object
+      const categoryLookup = {{ category_lookup|tojson }};
+
+      $(document).ready(function() {
+        // When team selection changes
+        $('.team-select').change(function() {
+          const team = $(this).val();
+          const rowId = $(this).data('rowid');
+          const categorySelect = $(`#category-${rowId}`);
+          
+          // Clear current options
+          categorySelect.empty();
+          
+          // Add default option
+          categorySelect.append($('<option>', {
+            value: '',
+            text: 'Select Category'
+          }));
+          
+          // Add new options based on team
+          if (team && categoryLookup[team]) {
+            categoryLookup[team].forEach(function(category) {
+              categorySelect.append($('<option>', {
+                value: category,
+                text: category
+              }));
+            });
+          }
+          
+          // Update the data-team attribute for the category select
+          categorySelect.data('team', team);
+        });
+      });
+    </script>
+  </body>
+</html>

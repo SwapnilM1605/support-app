@@ -1,0 +1,150 @@
+<!-- templates/response.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Support Response - {{ main_rec.customer_mail_id }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      .col-left { border-right: 1px solid #ddd; }
+      pre { white-space: pre-wrap; }
+      .metadata-form { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+      .thread-message { margin-bottom: 20px; padding: 15px; border: 1px solid #eee; border-radius: 5px; }
+      .customer-message { background-color: #f0f8ff; }
+      .response-message { background-color: #f0fff0; margin-left: 40px; }
+      .thread-header { font-weight: bold; margin-bottom: 5px; }
+      .thread-token { background-color: #e9ecef; padding: 5px 10px; border-radius: 4px; font-family: monospace; }
+    </style>
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <h4>Request #{{ main_rec.customer_mail_id }} (Thread)</h4>
+      
+      <!-- Thread Token Display -->
+      {% if main_rec.thread_token %}
+      <div class="alert alert-info">
+        <strong>Thread Reference:</strong> <span class="thread-token">{{ main_rec.thread_token }}</span>
+      </div>
+      {% endif %}
+      
+      <!-- Metadata update form -->
+      <div class="metadata-form">
+        <form action="{{ url_for('update_row') }}" method="post">
+          <input type="hidden" name="id" value="{{ main_rec.customer_mail_id }}">
+          <div class="form-row">
+            <div class="form-group col-md-3">
+              <label>Category</label>
+              <select name="category" class="form-control category-select" 
+                      data-team="{{ main_rec.team_assigned }}" 
+                      id="category-{{ main_rec.customer_mail_id }}">
+                <option value="{{ main_rec.category }}">{{ main_rec.category or 'Select' }}</option>
+                {% if main_rec.team_assigned %}
+                  {% for c in category_lookup[main_rec.team_assigned] %}
+                    <option value="{{ c }}">{{ c }}</option>
+                  {% endfor %}
+                {% endif %}
+              </select>
+            </div>
+            <div class="form-group col-md-3">
+              <label>Team Assigned</label>
+              <select name="team" class="form-control team-select" 
+                      data-rowid="{{ main_rec.customer_mail_id }}">
+                <option value="{{ main_rec.team_assigned }}">{{ main_rec.team_assigned or 'Select' }}</option>
+                {% for team in teams %}
+                  <option value="{{ team }}">{{ team }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group col-md-3">
+              <label>Status</label>
+              <select name="status" class="form-control">
+                <option value="pending" {% if main_rec.status == 'pending' %}selected{% endif %}>Pending</option>
+                <option value="in progress" {% if main_rec.status == 'in progress' %}selected{% endif %}>In Progress</option>
+                <option value="waiting for response" {% if main_rec.status == 'waiting for response' %}selected{% endif %}>Waiting For Response</option>
+                <option value="escalated" {% if main_rec.status == 'escalated' %}selected{% endif %}>Escalated</option>
+                <option value="resolved" {% if main_rec.status == 'resolved' %}selected{% endif %}>Resolved</option>
+              </select>
+            </div>
+            <div class="form-group col-md-3 d-flex align-items-end">
+              <button class="btn btn-primary" type="submit">Update</button>
+              <a href="{{ url_for('dashboard') }}" class="btn btn-link ml-2">Back to Dashboard</a>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div class="row mt-3">
+        <div class="col-md-6 col-left">
+          <h5>Conversation Thread</h5>
+          
+          {% for msg in thread_messages %}
+            <div class="thread-message {% if msg.is_customer_reply %}customer-message{% endif %}">
+              <div class="thread-header">
+                {{ msg.sender }} - {{ msg.timestamps.strftime('%Y-%m-%d %H:%M') }}
+                {% if msg.is_customer_reply %}(Customer Reply){% endif %}
+                {% if msg.thread_token %}
+                <br><small>Ref: {{ msg.thread_token }}</small>
+                {% endif %}
+              </div>
+              <div><strong>Subject:</strong> {{ msg.subject }}</div>
+              <pre>{{ msg.request }}</pre>
+              
+              {% if msg.response_text %}
+                <div class="response-message">
+                  <div class="thread-header">Support Response</div>
+                  <pre>{{ msg.response_text }}</pre>
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        
+        <div class="col-md-6">
+          <h5>AI Response Generator</h5>
+          <form action="{{ url_for('send_response', row_id=main_rec.customer_mail_id) }}" method="post">
+            <div class="form-group">
+              <label>Subject</label>
+              <input class="form-control" value="Re: {{ main_rec.subject }}" readonly>
+            </div>
+            <div class="form-group">
+              <label>Message Body</label>
+              <textarea name="response_text" rows="12" class="form-control">{{ suggested_response }}</textarea>
+            </div>
+            <button class="btn btn-primary">Send Response</button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back</a>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+      const categoryLookup = {{ category_lookup|tojson }};
+
+      $(document).ready(function() {
+        $('.team-select').change(function() {
+          const team = $(this).val();
+          const rowId = $(this).data('rowid');
+          const categorySelect = $(`#category-${rowId}`);
+          
+          categorySelect.empty();
+          categorySelect.append($('<option>', {
+            value: '',
+            text: 'Select Category'
+          }));
+          
+          if (team && categoryLookup[team]) {
+            categoryLookup[team].forEach(function(category) {
+              categorySelect.append($('<option>', {
+                value: category,
+                text: category
+              }));
+            });
+          }
+          
+          categorySelect.data('team', team);
+        });
+      });
+    </script>
+  </body>
+</html>

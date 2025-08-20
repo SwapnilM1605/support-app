@@ -1,0 +1,43 @@
+# Python virtual environments
+support/
+.venv/
+venv/
+env/
+
+# Environment variables (sensitive)
+.env
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# SQLite database files (don't commit data, recreate on deploy)
+instance/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# VSCode settings
+.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Flask-specific
+migrations/
+
+# Other ignores
+*.egg-info/
+dist/
+build/
+*.egg
+*.pyc
