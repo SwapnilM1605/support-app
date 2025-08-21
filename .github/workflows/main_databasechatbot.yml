@@ -58,9 +58,9 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E745F61DB63B4655BD614C30E71DD21E }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_EB0731B852F84DF4823128CBC84EDF94 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_EAC4EA243E0944D38FB9A88889606BD7 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_63FC031B22BE4CDFB5D032EC33892F29 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_77BE1C5A14904DCD904D0900AED1741F }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_3CC0A020B86A4589B0428C23650C64F1 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
@@ -68,5 +68,4 @@ jobs:
         with:
           app-name: 'databasechatbot'
           slot-name: 'Production'
-
           
