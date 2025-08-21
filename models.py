@@ -1,4 +1,3 @@
-# models.py file
 import os
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
@@ -19,7 +18,7 @@ class Support(db.Model):
     replied = db.Column(db.Boolean, default=False)
     response_text = db.Column(db.Text, nullable=True)
     thread_id = db.Column(db.String(128), nullable=True)
-    thread_token = db.Column(db.String(16), nullable=True)  # New field for thread token
+    thread_token = db.Column(db.String(16), nullable=True)
     is_customer_reply = db.Column(db.Boolean, default=False)
 
     def to_dict(self):
@@ -48,3 +47,14 @@ class TeamCategory(db.Model):
     category_name = db.Column(db.String(128), nullable=False)
     category_description = db.Column(db.Text, nullable=True)
     __table_args__ = (db.UniqueConstraint('team_name', 'category_name', name='uix_team_category'),)
+
+class KnowledgeDocument(db.Model):
+    __tablename__ = "knowledge_documents"
+    id = db.Column(db.Integer, primary_key=True)
+    team_name = db.Column(db.String(64), nullable=False)
+    category_name = db.Column(db.String(128), nullable=False)
+    filename = db.Column(db.String(256), nullable=False)
+    file_path = db.Column(db.String(512), nullable=False)
+    uploaded_at = db.Column(db.DateTime(timezone=True), default=datetime.utcnow)
+    content = db.Column(db.Text, nullable=True)
+    __table_args__ = (db.UniqueConstraint('team_name', 'category_name', 'filename', name='uix_knowledge_document'),)

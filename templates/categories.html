@@ -1,4 +1,5 @@
-<!-- templates/categories.html file -->
+<!-- templates/categories.html -->
+
 <!doctype html>
 <html lang="en">
   <head>
@@ -11,6 +12,9 @@
       .view-mode { display: block; }
       .editing .edit-mode { display: block; }
       .editing .view-mode { display: none; }
+      .category-row-template { display: none; }
+      .category-row { margin-bottom: 10px; }
+      .remove-category-btn { margin-top: 30px; } /* Align remove button with input */
     </style>
   </head>
   <body class="p-4">
@@ -26,7 +30,6 @@
       {% endwith %}
 
       <!-- Add Form -->
-      <!-- In the form section of categories.html -->
       <form action="{{ url_for('categories') }}" method="post" class="mb-4">
         <div class="form-group">
           <label>Team Type</label>
@@ -60,18 +63,41 @@
           </div>
         </div>
         
-        <div class="form-group">
-          <label>Category Name</label>
-          <input name="category_name" class="form-control" placeholder="Enter category name" required>
+        <div id="categories_section">
+          <label>Categories (add multiple)</label>
+          <div class="category-rows">
+            <!-- Initial row -->
+            <div class="form-row category-row">
+              <div class="col-md-4">
+                <input name="category_name[]" class="form-control" placeholder="Category Name" required>
+              </div>
+              <div class="col-md-7">
+                <textarea name="category_description[]" class="form-control" rows="2" placeholder="Category Description"></textarea>
+              </div>
+              <div class="col-md-1">
+                <button type="button" class="btn btn-success add-category-btn">+</button>
+              </div>
+            </div>
+          </div>
         </div>
         
-        <div class="form-group">
-          <label>Category Description</label>
-          <textarea name="category_description" class="form-control" rows="2" placeholder="Enter category description (used for classification)"></textarea>
-        </div>
-        
-        <button type="submit" class="btn btn-success">Add</button>
+        <button type="submit" class="btn btn-success mt-3">Add</button>
       </form>
+
+      <!-- Template for new category row -->
+      <div class="category-row-template">
+        <div class="form-row category-row">
+          <div class="col-md-4">
+            <input name="category_name[]" class="form-control" placeholder="Category Name" required>
+          </div>
+          <div class="col-md-7">
+            <textarea name="category_description[]" class="form-control" rows="2" placeholder="Category Description"></textarea>
+          </div>
+          <div class="col-md-1">
+            <button type="button" class="btn btn-danger remove-category-btn">-</button>
+          </div>
+        </div>
+      </div>
 
       <!-- Teams Table -->
       <h4>Teams</h4>
@@ -173,6 +199,19 @@
           }
         });
 
+        // Add category row
+        $(document).on('click', '.add-category-btn', function() {
+          const newRow = $('.category-row-template').html();
+          $('.category-rows').append(newRow);
+        });
+
+        // Remove category row
+        $(document).on('click', '.remove-category-btn', function() {
+          if ($('.category-row').length > 1) { // Prevent removing the last row
+            $(this).closest('.category-row').remove();
+          }
+        });
+
         // Team edit/save functionality
         $('.edit-team-btn').click(function() {
           const row = $(this).closest('.team-row');
@@ -203,7 +242,7 @@
               location.reload(); // Refresh to show changes
             },
             error: function(xhr) {
-              alert('Error updating team: ' + xhr.responseText);
+              alert('Error updating team: ' + xhr.responseJSON?.error || xhr.responseText);
             }
           });
         });
@@ -236,7 +275,7 @@
               location.reload(); // Refresh to show changes
             },
             error: function(xhr) {
-              alert('Error updating category: ' + xhr.responseText);
+              alert('Error updating category: ' + xhr.responseJSON?.error || xhr.responseText);
             }
           });
         });

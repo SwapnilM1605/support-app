@@ -25,7 +25,7 @@ def create_responder_agent(llm):
     return Agent(
         role="Response Generator",
         goal="Generate professional and polite responses to support requests including the support token.",
-        backstory="You craft concise, helpful responses addressing customer concerns with clear next steps, including the support ticket number.",
+        backstory="You craft concise, helpful responses addressing customer concerns with clear next steps, including the support ticket number. You use provided knowledge base documents to provide accurate responses.",
         llm=llm,
         verbose=False
     )

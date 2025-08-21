@@ -1,8 +1,9 @@
 import os
 
-# Use absolute path for DATABASE_PATH for database
+# Use absolute path for DATABASE_PATH and KNOWLEDGE_BASE_PATH
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATABASE_PATH = os.path.join(BASE_DIR, "instance", "support_data.db")
+KNOWLEDGE_BASE_PATH = os.path.join(BASE_DIR, "instance", "knowledge")
 
 AZURE_CONFIG = {
     "api_key": os.getenv("AZURE_OPENAI_API_KEY"),

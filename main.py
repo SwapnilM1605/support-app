@@ -3,18 +3,19 @@ import sqlite3
 import logging
 import uuid
 import re
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_from_directory
 from flask_migrate import Migrate
 from dotenv import load_dotenv
 from tools import (
     fix_windows_encoding, create_llm, test_llm_connection,
     fetch_unseen_emails, agent_classify_and_assign,
-    send_email_via_smtp, keyword_based_classify, extract_thread_token
+    send_email_via_smtp, keyword_based_classify, extract_thread_token,
+    extract_text_from_file
 )
-from models import db, Support, TeamCategory
+from models import db, Support, TeamCategory, KnowledgeDocument
 import threading
 import time
-from config import DATABASE_PATH
+from config import DATABASE_PATH, KNOWLEDGE_BASE_PATH
 from agents import create_email_fetcher_agent, create_classifier_agent, create_responder_agent
 import certifi
 import httpx
@@ -23,6 +24,8 @@ import ssl
 from crewai import Crew, Task
 import litellm
 from litellm import completion
+from werkzeug.utils import secure_filename
+from datetime import datetime
 
 # Disable CrewAI telemetry
 os.environ["CREWAI_TELEMETRY"] = "False"
@@ -37,9 +40,8 @@ def create_verified_client():
     return httpx.Client(verify=ssl_context)
 
 # Configure LiteLLM to bypass SSL verification (only if absolutely necessary)
-# Note: This should only be used in development, not production
-litellm.ssl_verify = False  # Disable SSL verification
-litellm.drop_params = True  # Drop any params that might cause issues
+litellm.ssl_verify = False
+litellm.drop_params = True
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -67,6 +69,15 @@ except Exception as e:
     logger.error(f"Database environment error: {e}")
     raise
 
+# Ensure knowledge base directory exists
+try:
+    os.makedirs(KNOWLEDGE_BASE_PATH, exist_ok=True)
+    if not os.access(KNOWLEDGE_BASE_PATH, os.W_OK):
+        raise PermissionError(f"No write permission for knowledge base directory: {KNOWLEDGE_BASE_PATH}")
+except Exception as e:
+    logger.error(f"Knowledge base directory error: {e}")
+    raise
+
 db.init_app(app)
 migrate = Migrate(app, db)
 
@@ -79,6 +90,8 @@ with app.app_context():
             raise Exception("Support table not created")
         if not inspector.has_table("team_categories"):
             raise Exception("TeamCategories table not created")
+        if not inspector.has_table("knowledge_documents"):
+            raise Exception("KnowledgeDocuments table not created")
         # Add default Internal team and Other category if none exist
         if not TeamCategory.query.filter_by(team_name="Internal", category_name="Other").first():
             internal = TeamCategory(
@@ -90,6 +103,8 @@ with app.app_context():
             )
             db.session.add(internal)
             db.session.commit()
+            # Create folder for Internal/Other
+            os.makedirs(os.path.join(KNOWLEDGE_BASE_PATH, "Internal", "Other"), exist_ok=True)
     except Exception as e:
         logger.error(f"Database init error: {e}")
         raise
@@ -263,6 +278,139 @@ def dashboard():
         category_lookup=category_lookup
     )
 
+@app.route("/knowledge")
+def knowledge_base():
+    teams_query = db.session.query(TeamCategory.team_name).distinct().order_by(TeamCategory.team_name).all()
+    teams = [t[0] for t in teams_query]
+    team_emails = {}
+    team_descriptions = {}
+    category_lookup = {}
+    category_descriptions = {}
+    for team in teams:
+        category_lookup[team] = []
+        category_descriptions[team] = {}
+        tc = TeamCategory.query.filter_by(team_name=team).all()
+        team_emails[team] = tc[0].team_email
+        team_descriptions[team] = tc[0].team_description or ""
+        for cat in tc:
+            category_lookup[team].append(cat.category_name)
+            category_descriptions[team][cat.category_name] = cat.category_description or ""
+    
+    def get_documents(team, category):
+        return KnowledgeDocument.query.filter_by(team_name=team, category_name=category).order_by(KnowledgeDocument.uploaded_at.desc()).all()
+    
+    return render_template(
+        "knowledge.html",
+        teams=teams,
+        team_emails=team_emails,
+        team_descriptions=team_descriptions,
+        category_lookup=category_lookup,
+        category_descriptions=category_descriptions,
+        get_documents=get_documents
+    )
+
+@app.route("/knowledge/upload/<team_name>/<category_name>", methods=["POST"])
+def upload_document(team_name, category_name):
+    team = TeamCategory.query.filter_by(team_name=team_name, category_name=category_name).first()
+    if not team:
+        flash("Invalid team or category", "danger")
+        return redirect(url_for("knowledge_base"))
+    
+    if 'file' not in request.files:
+        flash("No file uploaded", "danger")
+        return redirect(url_for("knowledge_base"))
+    
+    file = request.files['file']
+    if file.filename == '':
+        flash("No file selected", "danger")
+        return redirect(url_for("knowledge_base"))
+    
+    allowed_extensions = {'.txt', '.pdf', '.doc', '.docx'}
+    if not os.path.splitext(file.filename)[1].lower() in allowed_extensions:
+        flash("Invalid file type. Allowed types: txt, pdf, doc, docx", "danger")
+        return redirect(url_for("knowledge_base"))
+    
+    filename = secure_filename(file.filename)
+    team_folder = os.path.join(KNOWLEDGE_BASE_PATH, team_name)
+    category_folder = os.path.join(team_folder, category_name)
+    os.makedirs(category_folder, exist_ok=True)
+    
+    # Generate unique filename to avoid conflicts
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    unique_filename = filename
+    while os.path.exists(os.path.join(category_folder, unique_filename)):
+        unique_filename = f"{base}_{counter}{ext}"
+        counter += 1
+    
+    file_path = os.path.join(category_folder, unique_filename)
+    file.save(file_path)
+    
+    # Extract content from file
+    content = extract_text_from_file(file_path)
+    
+    # Store document metadata and content in the database
+    doc = KnowledgeDocument(
+        team_name=team_name,
+        category_name=category_name,
+        filename=unique_filename,
+        file_path=file_path,
+        uploaded_at=datetime.utcnow(),
+        content=content
+    )
+    db.session.add(doc)
+    db.session.commit()
+    
+    flash(f"Document '{unique_filename}' uploaded successfully", "success")
+    return redirect(url_for("knowledge_base"))
+
+@app.route("/knowledge/download/<int:doc_id>")
+def download_document(doc_id):
+    doc = KnowledgeDocument.query.get(doc_id)
+    if not doc:
+        flash("Document not found", "danger")
+        return redirect(url_for("knowledge_base"))
+    
+    return send_from_directory(
+        directory=os.path.dirname(doc.file_path),
+        path=os.path.basename(doc.file_path),
+        as_attachment=True
+    )
+
+@app.route("/knowledge/update/<int:doc_id>", methods=["POST"])
+def update_document(doc_id):
+    doc = KnowledgeDocument.query.get(doc_id)
+    if not doc:
+        return jsonify({"error": "Document not found"}), 404
+    
+    new_content = request.form.get("content", doc.content)
+    
+    doc.content = new_content
+    
+    try:
+        db.session.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/knowledge/delete/<int:doc_id>", methods=["POST"])
+def delete_document(doc_id):
+    doc = KnowledgeDocument.query.get(doc_id)
+    if not doc:
+        flash("Document not found", "danger")
+        return redirect(url_for("knowledge_base"))
+    
+    try:
+        os.remove(doc.file_path)
+        db.session.delete(doc)
+        db.session.commit()
+        flash(f"Document '{doc.filename}' deleted successfully", "success")
+    except Exception as e:
+        flash(f"Error deleting document: {str(e)}", "danger")
+    
+    return redirect(url_for("knowledge_base"))
+
 @app.route("/update", methods=["POST"])
 def update_row():
     row_id = request.form.get("id")
@@ -371,6 +519,20 @@ def view_request(row_id):
                 msg.action = "Classification synchronized with thread"
         db.session.commit()
     
+    # Load relevant knowledge base documents based on assigned team and category
+    knowledge_section = ""
+    referenced_docs = []
+    if main_rec.team_assigned and main_rec.category:
+        docs = KnowledgeDocument.query.filter_by(
+            team_name=main_rec.team_assigned,
+            category_name=main_rec.category
+        ).all()
+        if docs:
+            knowledge_section = "## Relevant Knowledge Base Documents ##\nUse these to inform your response, but do not mention specific document names in the response.\n\n"
+            for doc in docs:
+                knowledge_section += f"### {doc.filename} ###\n{doc.content[:2000]}\n\n"
+                referenced_docs.append(doc.filename)  # Track document names for UI display
+
     # Generate response with thread token included
     thread_context = "\n\n--- Previous Messages ---\n"
     for msg in reversed(thread_messages[1:]):  # Skip the first (latest) message
@@ -391,6 +553,8 @@ Message:
 
 {thread_context}
 
+{knowledge_section}
+
 The response should be professional and include:
 1. Acknowledgment of the issue and any previous communications
 2. Clear explanation of next steps or solution
@@ -402,6 +566,7 @@ Format requirements:
 - Keep it to 3-6 short paragraphs
 - Include the reference token in the response
 - End with: "Best regards,\nSupport Team"
+- Do not mention specific knowledge base document names in the response, even if you use their information
 """
         task = Task(
             description=prompt,
@@ -427,7 +592,8 @@ Format requirements:
         thread_messages=thread_messages,
         suggested_response=suggested_response, 
         category_lookup=category_lookup,
-        teams=teams
+        teams=teams,
+        referenced_docs=referenced_docs  # Pass referenced document names to template
     )
 
 @app.route("/send_response/<int:row_id>", methods=["POST"])
@@ -480,8 +646,16 @@ def categories_auth():
 def categories():
     if request.method == "POST":
         team_type = request.form.get("team_type")
-        category_name = request.form.get("category_name", "").strip()
-        description = request.form.get("category_description", "").strip()
+        category_names = request.form.getlist("category_name[]")
+        category_descriptions = request.form.getlist("category_description[]")
+        
+        logger.debug(f"Received team_type: {team_type}")
+        logger.debug(f"Received category_names: {category_names}")
+        logger.debug(f"Received category_descriptions: {category_descriptions}")
+        
+        if not category_names:
+            flash("No category names provided", "danger")
+            return redirect(url_for("categories"))
         
         if team_type == "new":
             new_team_name = request.form.get("new_team_name", "").strip()
@@ -496,6 +670,10 @@ def categories():
                 flash("Team already exists", "danger")
                 return redirect(url_for("categories"))
                 
+            # Create team folder
+            team_folder = os.path.join(KNOWLEDGE_BASE_PATH, new_team_name)
+            os.makedirs(team_folder, exist_ok=True)
+            
             # Add default Other category
             other_cat = TeamCategory(
                 team_name=new_team_name,
@@ -505,9 +683,30 @@ def categories():
                 category_description="Default other category"
             )
             db.session.add(other_cat)
+            os.makedirs(os.path.join(team_folder, "Other"), exist_ok=True)
             
-            # Add the new category if provided and not Other
-            if category_name and category_name.lower() != "other":
+            # Add the new categories if provided and not Other
+            added = 0
+            for i in range(len(category_names)):
+                category_name = category_names[i].strip() if i < len(category_names) else ""
+                description = category_descriptions[i].strip() if i < len(category_descriptions) else ""
+                
+                logger.debug(f"Processing category {i+1}: name='{category_name}', description='{description}'")
+                
+                if not category_name:
+                    logger.warning(f"Skipping empty category name at index {i}")
+                    continue
+                    
+                if category_name.lower() == "other":
+                    logger.warning(f"Skipping 'Other' category at index {i}")
+                    flash("Cannot create 'Other' category manually", "danger")
+                    continue
+                    
+                if TeamCategory.query.filter_by(team_name=new_team_name, category_name=category_name).first():
+                    logger.warning(f"Category '{category_name}' already exists for team '{new_team_name}'")
+                    flash(f"Category '{category_name}' already exists for this team", "danger")
+                    continue
+                    
                 cat = TeamCategory(
                     team_name=new_team_name,
                     team_email=new_team_email,
@@ -516,9 +715,11 @@ def categories():
                     category_description=description
                 )
                 db.session.add(cat)
+                os.makedirs(os.path.join(team_folder, category_name), exist_ok=True)
+                added += 1
                 
             db.session.commit()
-            flash("New team and category added", "success")
+            flash(f"New team and {added} categories added", "success") if added > 0 else flash("No valid categories added for new team", "info")
             
         else:  # existing team
             team_name = request.form.get("team_name", "").strip()
@@ -527,40 +728,57 @@ def categories():
                 flash("Missing team name", "danger")
                 return redirect(url_for("categories"))
                 
-            if not category_name:
-                flash("Missing category name", "danger")
-                return redirect(url_for("categories"))
-                
-            if category_name.lower() == "other":
-                flash("Cannot create 'Other' category manually", "danger")
-                return redirect(url_for("categories"))
-                
             # Check if team exists
             team_entries = TeamCategory.query.filter_by(team_name=team_name).all()
             if not team_entries:
                 flash("Team not found", "danger")
                 return redirect(url_for("categories"))
                 
-            # Check if category already exists for this team
-            if TeamCategory.query.filter_by(team_name=team_name, category_name=category_name).first():
-                flash("Category already exists for this team", "danger")
-                return redirect(url_for("categories"))
+            # Create team folder if it doesn't exist
+            team_folder = os.path.join(KNOWLEDGE_BASE_PATH, team_name)
+            os.makedirs(team_folder, exist_ok=True)
+            
+            # Add the new categories
+            added = 0
+            for i in range(len(category_names)):
+                category_name = category_names[i].strip() if i < len(category_names) else ""
+                description = category_descriptions[i].strip() if i < len(category_descriptions) else ""
                 
-            # Add the new category
-            cat = TeamCategory(
-                team_name=team_name,
-                team_email=team_entries[0].team_email,
-                team_description=team_entries[0].team_description,
-                category_name=category_name,
-                category_description=description
-            )
-            db.session.add(cat)
+                logger.debug(f"Processing category {i+1}: name='{category_name}', description='{description}'")
+                
+                if not category_name:
+                    logger.warning(f"Skipping empty category name at index {i}")
+                    continue
+                    
+                if category_name.lower() == "other":
+                    logger.warning(f"Skipping 'Other' category at index {i}")
+                    flash("Cannot create 'Other' category manually", "danger")
+                    continue
+                    
+                # Check if category already exists for this team
+                if TeamCategory.query.filter_by(team_name=team_name, category_name=category_name).first():
+                    logger.warning(f"Category '{category_name}' already exists for team '{team_name}'")
+                    flash(f"Category '{category_name}' already exists for this team", "danger")
+                    continue
+                    
+                # Add the new category
+                cat = TeamCategory(
+                    team_name=team_name,
+                    team_email=team_entries[0].team_email,
+                    team_description=team_entries[0].team_description,
+                    category_name=category_name,
+                    category_description=description
+                )
+                db.session.add(cat)
+                os.makedirs(os.path.join(team_folder, category_name), exist_ok=True)
+                added += 1
+            
             db.session.commit()
-            flash("New category added", "success")
+            flash(f"{added} new categories added", "success") if added > 0 else flash("No valid categories added", "info")
             
         return redirect(url_for("categories"))
     
-    # GET request handling remains the same
+    # GET request handling
     teams_query = db.session.query(TeamCategory.team_name).distinct().order_by(TeamCategory.team_name).all()
     teams = [t[0] for t in teams_query]
     team_emails = {}
@@ -580,6 +798,19 @@ def categories():
 def delete_category(cat_id):
     cat = TeamCategory.query.get(cat_id)
     if cat and cat.category_name != "Other":
+        # Check if there are any documents in the category
+        docs = KnowledgeDocument.query.filter_by(team_name=cat.team_name, category_name=cat.category_name).all()
+        if docs:
+            flash("Cannot delete category with existing documents", "danger")
+            return redirect(url_for("categories"))
+        # Delete the category folder if empty
+        category_folder = os.path.join(KNOWLEDGE_BASE_PATH, cat.team_name, cat.category_name)
+        try:
+            if os.path.exists(category_folder):
+                os.rmdir(category_folder)
+        except OSError:
+            flash("Cannot delete category folder; ensure it is empty", "danger")
+            return redirect(url_for("categories"))
         db.session.delete(cat)
         db.session.commit()
         flash("Category deleted", "success")
@@ -594,12 +825,19 @@ def update_team(team_name):
     if not team_entries:
         return jsonify({"error": "Team not found"}), 404
     
-    new_name = request.form.get("team_name", team_name)
+    new_name = request.form.get("team_name", team_name).strip()
     new_email = request.form.get("team_email", team_entries[0].team_email)
     new_description = request.form.get("team_description", team_entries[0].team_description)
     
     if new_name != team_name and TeamCategory.query.filter_by(team_name=new_name).first():
         return jsonify({"error": "Team name already exists"}), 400
+    
+    # Rename team folder if name changed
+    if new_name != team_name:
+        old_folder = os.path.join(KNOWLEDGE_BASE_PATH, team_name)
+        new_folder = os.path.join(KNOWLEDGE_BASE_PATH, new_name)
+        if os.path.exists(old_folder):
+            os.rename(old_folder, new_folder)
     
     for entry in team_entries:
         entry.team_name = new_name
@@ -622,11 +860,18 @@ def update_category(cat_id):
     if category.category_name == "Other":
         return jsonify({"error": "Cannot modify 'Other' category"}), 400
     
-    new_category_name = request.form.get("category_name", category.category_name)
+    new_category_name = request.form.get("category_name", category.category_name).strip()
     new_description = request.form.get("category_description", category.category_description)
     
     if new_category_name != category.category_name and TeamCategory.query.filter_by(team_name=category.team_name, category_name=new_category_name).first():
         return jsonify({"error": "Category name already exists for this team"}), 400
+    
+    # Rename category folder if name changed
+    if new_category_name != category.category_name:
+        old_folder = os.path.join(KNOWLEDGE_BASE_PATH, category.team_name, category.category_name)
+        new_folder = os.path.join(KNOWLEDGE_BASE_PATH, category.team_name, new_category_name)
+        if os.path.exists(old_folder):
+            os.rename(old_folder, new_folder)
     
     category.category_name = new_category_name
     category.category_description = new_description

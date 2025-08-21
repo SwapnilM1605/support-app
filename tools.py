@@ -14,6 +14,8 @@ from datetime import datetime
 import certifi
 from models import db, TeamCategory
 from agents import create_validator_agent
+import PyPDF2
+from docx import Document
 
 load_dotenv()
 
@@ -150,34 +152,30 @@ def fetch_unseen_emails():
 
 def extract_thread_token(body, subject=""):
     """Flexibly extract thread token from email body and subject"""
-    # Combine content for searching
     search_content = f"{subject} {body}"
     
-    # Multiple patterns to catch tokens in different formats
     patterns = [
-        r'SUPPORT-[A-Z0-9]{8}',                    # Exact format: SUPPORT-A1B2C3D4
-        r'Reference[:\s]*([A-Z0-9-]{13,15})',      # "Reference: SUPPORT-A1B2C3D4"
-        r'Ticket[:\s]*([A-Z0-9-]{13,15})',         # "Ticket: SUPPORT-A1B2C3D4"
-        r'#[:\s]*([A-Z0-9-]{13,15})',              # "#SUPPORT-A1B2C3D4"
-        r'Support[:\s]*([A-Z0-9-]{13,15})',        # "Support: SUPPORT-A1B2C3D4"
-        r'ID[:\s]*([A-Z0-9-]{13,15})',             # "ID: SUPPORT-A1B2C3D4"
-        r'Case[:\s]*([A-Z0-9-]{13,15})',           # "Case: SUPPORT-A1B2C3D4"
+        r'SUPPORT-[A-Z0-9]{8}',
+        r'Reference[:\s]*([A-Z0-9-]{13,15})',
+        r'Ticket[:\s]*([A-Z0-9-]{13,15})',
+        r'#[:\s]*([A-Z0-9-]{13,15})',
+        r'Support[:\s]*([A-Z0-9-]{13,15})',
+        r'ID[:\s]*([A-Z0-9-]{13,15})',
+        r'Case[:\s]*([A-Z0-9-]{13,15})',
     ]
     
     for pattern in patterns:
         matches = re.findall(pattern, search_content, re.IGNORECASE)
         for match in matches:
             if isinstance(match, tuple):
-                match = match[0]  # Get the first group if it's a tuple
-            if match.startswith('SUPPORT-') and len(match) == 13:  # SUPPORT- + 8 chars
+                match = match[0]
+            if match.startswith('SUPPORT-') and len(match) == 13:
                 return match
             elif 'SUPPORT-' in match.upper():
-                # Extract just the SUPPORT- part
                 support_match = re.search(r'SUPPORT-[A-Z0-9]{8}', match, re.IGNORECASE)
                 if support_match:
                     return support_match.group(0)
     
-    # Check in common reply patterns
     reply_patterns = [
         r'On.*wrote:.*?(SUPPORT-[A-Z0-9]{8})',
         r'From:.*?Sent:.*?(SUPPORT-[A-Z0-9]{8})',
@@ -191,14 +189,35 @@ def extract_thread_token(body, subject=""):
     
     return None
 
+def extract_text_from_file(file_path):
+    """Extract text content from supported file types."""
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == '.txt':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        elif ext == '.pdf':
+            text = ''
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    text += page.extract_text() + '\n'
+            return text
+        elif ext in ['.docx', '.doc']:
+            doc = Document(file_path)
+            return '\n'.join([para.text for para in doc.paragraphs])
+        else:
+            return ''
+    except Exception as e:
+        print(f"Error extracting text from {file_path}: {e}")
+        return ''
+
 def agent_classify_and_assign(agent, subject, body):
     """Classifies an email and assigns it to the most appropriate team and category."""
-    # Check if this is a reply by looking for thread token first
     thread_token = extract_thread_token(body, subject)
     if thread_token:
         return None, None, 0.0, f"Reply detected with token {thread_token} - classification will be inherited from thread"
     
-    # Fallback to subject-based reply detection
     is_reply = subject.lower().startswith(('re:', 'fw:')) or any(
         phrase in body.lower() for phrase in [
             'on wrote:', 'on sent:', 'original message', 'forwarded message'
@@ -208,7 +227,6 @@ def agent_classify_and_assign(agent, subject, body):
     if is_reply:
         return None, None, 0.0, "Reply detected - classification will be inherited from thread"
     
-    # Rest of the original classification logic...
     team_categories = TeamCategory.query.all()
     
     team_groups = {}
@@ -224,31 +242,36 @@ def agent_classify_and_assign(agent, subject, body):
             "description": tc.category_description or "No description"
         })
 
-    team_context = """## Available Support Teams ##
-Each team has specific responsibilities:
+    team_context = """## Available Support Teams and Categories ##
+Each team has specific responsibilities and associated categories:
 """
     for team_name, data in team_groups.items():
         team_entry = f"""### {team_name} Team ###
 Description: {data['description']}
+Categories:
 """
+        for cat in data["categories"]:
+            team_entry += f"- {cat['name']}: {cat['description']}\n"
         team_context += team_entry
 
-    team_prompt = f"""
-You are an expert support email classifier. Your task is to analyze the email and assign the best team based on their descriptions.
+    prompt = f"""
+You are an expert support email classifier. Your task is to analyze the email and assign the most appropriate team and category based on their descriptions from the database.
 
 Follow this step-by-step process in your reasoning:
 1. Summarize the main concern of the email in 1-2 sentences.
-2. Evaluate each team: For each available team, explain if and how the email's concern matches the team description. Be specific about matching keywords or concepts. If no match, explicitly state why the team is not suitable.
-3. Select the best team: Choose the team with the strongest match, explaining why. If no team matches well, strictly use Internal and explain why no other team fits.
+2. Evaluate each team: For each team, check if the email's concern matches the team description or any of its category descriptions. Be specific about matching keywords, phrases, or concepts. If no match, explicitly state why the team is not suitable.
+3. Evaluate each category within the best team: For the selected team, check each category description for the best match. Be precise about keyword or concept matches.
+4. Select the best team and category: Choose the team and category with the strongest match, explaining why. If no specific match, use 'Internal' team and 'Other' category, explaining why no other options fit.
 
 ### Classification Guidelines ###
-- Use ONLY the team names provided exactly as listed
-- Match the email's main concern to team descriptions closely. Do not force a match if it's weak or based on generic terms (e.g., common words like 'report' or 'review' do not justify a match unless context aligns perfectly).
-- IT team handles ONLY technical issues like networks, hardware, software, account access, passwords. It does NOT handle business or administrative matters.
-- HR handles ONLY employee-related issues like leave, payroll, benefits. It does NOT handle business operations or reporting.
-- For topics outside defined team scopes, strictly use Internal.
-- Only use 'Internal' team when no other team is appropriate, prioritizing it over incorrect assignments.
-- Avoid overgeneralizing terms to force a match.
+- Use ONLY the team and category names as listed in the provided context.
+- Match the email's concern closely to team and category descriptions. Do not force matches based on generic terms (e.g., 'report' or 'issue' alone are not sufficient).
+- IT team handles ONLY technical issues (e.g., networks, hardware, software, account access, passwords). It does NOT handle financial or administrative matters.
+- HR handles ONLY employee-related issues (e.g., leave, payroll queries, benefits, onboarding). It does NOT handle financial transactions or technical issues.
+- Finance handles financial matters (e.g., salary payments, expenses, invoices, tax issues). Salary credit issues (e.g., non-credited, delayed, or incorrect salary) belong to Finance, not IT or HR unless explicitly about employee benefits.
+- Use 'Internal/Other' only when no other team/category matches, and explain why.
+- Consider synonyms and related terms, but prioritize exact or near-exact matches to descriptions.
+- Avoid misclassifications by cross-checking against all teams/categories.
 
 {team_context}
 
@@ -259,6 +282,7 @@ Body: "{body}"
 ### Required Output Format ###
 {{
   "team": "exact_team_name_from_list",
+  "category": "exact_category_name_or_Other",
   "confidence": 0.0-1.0,
   "reasoning": "Detailed step-by-step explanation as per the process above"
 }}
@@ -266,133 +290,94 @@ Body: "{body}"
 Example Output for unmatched email:
 {{
   "team": "Internal",
+  "category": "Other",
   "confidence": 0.8,
-  "reasoning": "1. Email discusses a business report. 2. IT does not match as it handles technical issues, not business matters. HR does not match as it handles employee-related issues, not reports. Internal is default. 3. Best is Internal as no specific team covers business reports."
+  "reasoning": "1. Email discusses a business report. 2. IT does not match (technical issues only). HR does not match (employee-related issues only). Finance does not match (financial transactions only). 3. No specific category applies. 4. Internal/Other is the best fit as no team/category matches."
+}}
+
+Example Output for salary credit issue:
+{{
+  "team": "Finance",
+  "category": "Salary Credit",
+  "confidence": 0.95,
+  "reasoning": "1. Email complains about salary not credited. 2. IT does not match (technical issues only). HR partially matches (payroll) but Finance directly handles salary disbursement. Finance description mentions 'salary disbursement' and category 'Salary Credit' explicitly covers 'salary not credited'. 3. Salary Credit category matches due to 'salary not credited' phrase. Other Finance categories (e.g., Taxation Issue) do not apply. 4. Finance/Salary Credit is the best match."
 }}
 """
     try:
-        team_task = Task(
-            description=team_prompt,
-            expected_output="Valid JSON with team, confidence and reasoning",
+        task = Task(
+            description=prompt,
+            expected_output="Valid JSON with team, category, confidence, and reasoning",
             agent=agent
         )
-        crew = Crew(agents=[agent], tasks=[team_task], verbose=0)
-        raw_team_response = crew.kickoff()
+        crew = Crew(agents=[agent], tasks=[task], verbose=0)
+        raw_response = crew.kickoff()
         
-        json_match = re.search(r"\{.*\}", raw_team_response.strip(), re.DOTALL)
+        json_match = re.search(r"\{.*\}", raw_response.strip(), re.DOTALL)
         if not json_match:
-            raise ValueError("No valid JSON in team response")
+            raise ValueError("No valid JSON in response")
         
-        parsed_team = json.loads(json_match.group(0))
-        team_name = parsed_team.get("team", "").strip()
-        team_confidence = float(parsed_team.get("confidence", 0.0))
-        team_reasoning = parsed_team.get("reasoning", "").strip()
+        parsed = json.loads(json_match.group(0))
+        team_name = parsed.get("team", "").strip()
+        category_name = parsed.get("category", "").strip()
+        confidence = float(parsed.get("confidence", 0.0))
+        reasoning = parsed.get("reasoning", "").strip()
         
-        if team_name not in team_groups:
+        # Validate team and category existence
+        valid_teams = [t.team_name for t in team_categories]
+        if team_name not in valid_teams:
             team_name = "Internal"
-            team_confidence = 0.0
-            team_reasoning += "\nInvalid team selected, falling back to Internal"
-        
-        if team_name == "Internal":
             category_name = "Other"
-            cat_confidence = team_confidence
-            cat_reasoning = "Default to Other for Internal team as no specific category applies"
+            confidence = 0.0
+            reasoning += "\nInvalid team selected, falling back to Internal/Other"
         else:
-            cat_data = team_groups[team_name]
-            cat_context = f"""## Categories for {team_name} Team ##
-Description: {cat_data['description']}
-Categories:
-"""
-            for cat in cat_data["categories"]:
-                cat_context += f"- {cat['name']}: {cat['description']}\n"
-            
-            cat_prompt = f"""
-You are an expert support email classifier. Given the selected team {team_name}, assign the best category based on the descriptions.
-
-Follow this step-by-step process in your reasoning:
-1. Summarize the main concern of the email in 1-2 sentences.
-2. Evaluate each category: For each category, explain if and how the email's concern matches the category description. Be specific about keywords and context.
-3. Select the best category: Choose the category with the strongest match, explaining why. If no category matches well, strictly use 'Other' and explain why no specific category fits.
-
-### Classification Guidelines ###
-- Use ONLY the category names provided exactly as listed
-- Prefer specific categories over 'Other' only if there's a strong, direct match to the category description
-- Do not force matches based on generic terms (e.g., common words like 'report' do not imply a specific category)
-- For IT, 'Password reset' applies only to explicit password-related issues
-- For topics outside defined categories, use 'Other'
-
-{cat_context}
-
-### Email to Classify ###
-Subject: "{subject}"
-Body: "{body}"
-
-### Required Output Format ###
-{{
-  "category": "exact_category_name_or_Other",
-  "confidence": 0.0-1.0,
-  "reasoning": "Detailed step-by-step explanation as per the process above"
-}}
-
-Example Output for unmatched category:
-{{
-  "category": "Other",
-  "confidence": 0.7,
-  "reasoning": "1. Request about a business report. 2. Password reset does not match as it covers password issues, not business matters. Other is default. 3. Best is Other as no specific category matches."
-}}
-"""
-            cat_task = Task(
-                description=cat_prompt,
-                expected_output="Valid JSON with category, confidence and reasoning",
-                agent=agent
-            )
-            crew = Crew(agents=[agent], tasks=[cat_task], verbose=0)
-            raw_cat_response = crew.kickoff()
-            
-            json_match = re.search(r"\{.*\}", raw_cat_response.strip(), re.DOTALL)
-            if not json_match:
-                raise ValueError("No valid JSON in category response")
-            
-            parsed_cat = json.loads(json_match.group(0))
-            category_name = parsed_cat.get("category", "").strip()
-            cat_confidence = float(parsed_cat.get("confidence", 0.0))
-            cat_reasoning = parsed_cat.get("reasoning", "").strip()
-            
-            valid_cats = [c["name"] for c in cat_data["categories"]]
+            valid_cats = [c["name"] for c in team_groups[team_name]["categories"]]
             if category_name not in valid_cats:
                 category_name = "Other"
-                cat_confidence = 0.0
-                cat_reasoning += "\nInvalid category, falling back to Other"
+                confidence = min(confidence, 0.5)
+                reasoning += f"\nInvalid category for team {team_name}, falling back to Other"
         
-        overall_confidence = min(team_confidence, cat_confidence)
-        overall_reasoning = f"Team Selection:\n{team_reasoning}\n\nCategory Selection:\n{cat_reasoning}"
-        
+        # Validation step
         validator_agent = create_validator_agent(agent.llm)
         cat_desc = next((c['description'] for c in team_groups[team_name]['categories'] if c['name'] == category_name), "No description")
+        
         validation_prompt = f"""
-Validate if the assigned team '{team_name}' and category '{category_name}' logically match the email.
+Validate if the assigned team '{team_name}' and category '{category_name}' are the BEST logical match for the email, considering ALL available teams and categories.
 
-Team description: {team_groups[team_name]['description']}
-Category description: {cat_desc}
+{team_context}
+
+Assigned Team description: {team_groups[team_name]['description']}
+Assigned Category description: {cat_desc}
 Email subject: "{subject}"
 Email body: "{body}"
 
-Check:
-- Does the email content directly and specifically relate to the team description? Generic terms like 'report' or 'review' do not justify a match unless context is clear.
-- Does the category description explicitly cover the email's main concern?
-- If the email involves topics not covered by the assigned team's description or category, it must be Internal/Other.
-- Reject weak or forced matches with a clear explanation.
+Follow this step-by-step process:
+1. Summarize the email concern.
+2. Check match to assigned: Does the email directly relate to the assigned team/category descriptions? Explain specific matches or mismatches.
+3. Check alternatives: Evaluate if any other team/category matches better. Be specific about why or why not.
+4. Final validation: If the assigned is the best match, valid=true. If another matches better or assigned doesn't match at all, valid=false and explain.
+
+### Validation Guidelines ###
+- Reject if assigned team/category doesn't explicitly cover the concern (e.g., salary credit to IT is invalid as IT is for technical issues, not financial).
+- Prefer teams/categories with direct keyword or concept matches to descriptions.
+- If multiple possible, choose the most specific; invalidate if wrong one selected.
+- Examples of invalid: Salary/payment issues to IT/Password reset (should be Finance/Salary Credit). Technical access to Finance.
 
 Output ONLY JSON:
 {{
   "valid": true or false,
-  "reason": "Explanation why valid or not"
+  "reason": "Detailed step-by-step explanation"
 }}
 
-Example for unmatched email:
+Example for invalid salary to IT:
 {{
   "valid": false,
-  "reason": "Business report email assigned to IT/Password reset, but IT handles technical issues like passwords, not business matters. Should be Internal/Other."
+  "reason": "1. Concern: Salary not credited. 2. IT/Password reset doesn't match; IT is for technical issues, not payments. 3. Finance/Salary Credit matches better with 'salary disbursement' and 'salary not credited'. 4. Invalid, should be Finance/Salary Credit."
+}}
+
+Example for valid:
+{{
+  "valid": true,
+  "reason": "1. Concern: Forgot password. 2. Matches IT/Password reset directly. 3. No other team handles passwords. 4. Valid as best match."
 }}
 """
         val_task = Task(
@@ -407,9 +392,9 @@ Example for unmatched email:
         if json_match:
             parsed_val = json.loads(json_match.group(0))
             if not parsed_val.get("valid", True):
-                return "Other", "Internal", 0.0, overall_reasoning + f"\nValidation failed: {parsed_val.get('reason', '')}"
+                return "Other", "Internal", 0.0, reasoning + f"\nValidation failed: {parsed_val.get('reason', '')}"
         
-        return category_name, team_name, overall_confidence, overall_reasoning
+        return category_name, team_name, confidence, reasoning
 
     except Exception as e:
         fallback_category, fallback_team = keyword_based_classify(f"{subject} {body}")
@@ -421,7 +406,6 @@ Example for unmatched email:
         )
 
 def keyword_based_classify(text):
-    # Check if this appears to be a reply
     if any(phrase in text.lower() for phrase in [
         'on wrote:', 'on sent:', 'original message', 'forwarded message'
     ]):
@@ -434,54 +418,42 @@ def keyword_based_classify(text):
     for tc in team_categories:
         team = tc.team_name
         if team not in team_scores:
-            team_scores[team] = 0
+            team_scores[team] = {'score': 0, 'category_scores': {}}
         
-        # Team name (highest weight)
-        if team.lower() in text_low:
-            team_scores[team] += 10
-        
-        # Team description (moderate weight, focus on specific terms)
+        # Score based on team description
         if tc.team_description:
-            words = set(w for w in tc.team_description.lower().split() if len(w) > 4)
+            words = set(w for w in tc.team_description.lower().split() if len(w) >= 3)
             for word in words:
                 if word in text_low:
-                    team_scores[team] += 3
+                    team_scores[team]['score'] += 2
         
-        # Category name (high weight)
+        # Score based on category name
         if tc.category_name.lower() in text_low:
-            team_scores[team] += 8
+            if tc.category_name not in team_scores[team]['category_scores']:
+                team_scores[team]['category_scores'][tc.category_name] = 0
+            team_scores[team]['category_scores'][tc.category_name] += 8
         
-        # Category description (moderate weight, focus on specific terms)
+        # Score based on category description
         if tc.category_description:
-            words = set(w for w in tc.category_description.lower().split() if len(w) > 4)
-            for word in words:
+            desc_words = set(w for w in tc.category_description.lower().split() if len(w) >= 3)
+            for word in desc_words:
                 if word in text_low:
-                    team_scores[team] += 3
+                    if tc.category_name not in team_scores[team]['category_scores']:
+                        team_scores[team]['category_scores'][tc.category_name] = 0
+                    team_scores[team]['category_scores'][tc.category_name] += 3
     
     if team_scores:
-        best_team = max(team_scores, key=team_scores.get)
-        best_score = team_scores[best_team]
-        if best_score < 5:  # High threshold to avoid weak matches
+        best_team = max(team_scores, key=lambda x: team_scores[x]['score'])
+        best_score = team_scores[best_team]['score']
+        if best_score < 5:
             return "Other", "Internal"
     else:
         return "Other", "Internal"
     
-    cats = [tc for tc in team_categories if tc.team_name == best_team]
-    cat_scores = {}
-    for cat in cats:
-        score = 0
-        if cat.category_name.lower() in text_low:
-            score += 10
-        if cat.category_description:
-            words = set(w for w in cat.category_description.lower().split() if len(w) > 4)
-            for word in words:
-                if word in text_low:
-                    score += 3
-        cat_scores[cat.category_name] = score
-    
-    if cat_scores:
-        best_cat = max(cat_scores, key=cat_scores.get)
-        if cat_scores[best_cat] > 5:  # High threshold for category
+    best_cat_scores = team_scores[best_team]['category_scores']
+    if best_cat_scores:
+        best_cat = max(best_cat_scores, key=best_cat_scores.get)
+        if best_cat_scores[best_cat] > 5:
             return best_cat, best_team
     
     return "Other", best_team
