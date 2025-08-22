@@ -66,3 +66,9 @@ jobs:
           slot-name: 'production'
           package: .
           startup-command: 'gunicorn --bind=0.0.0.0 --timeout 600 app:app'
+
+      - name: 'Health Check - Verify App is Running'
+        run: |
+          echo "Waiting 20s for app to boot..."
+          sleep 20
+          curl -f https://databasechatbot.azurewebsites.net || exit 1
