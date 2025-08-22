@@ -28,8 +28,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Optional: Run tests here
-
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
@@ -69,6 +67,15 @@ jobs:
 
       - name: 'Health Check - Verify App is Running'
         run: |
-          echo "Waiting 60s for app to boot..."
-          sleep 60
-          curl -f https://databasechatbot-erg3hbcph9axfxfh.westus2-01.azurewebsites.net || exit 1
+          echo "Waiting for app to boot..."
+          for i in {1..10}; do
+            echo "Attempt $i: Checking app health..."
+            if curl -fsS https://databasechatbot-erg3hbcph9axfxfh.westus2-01.azurewebsites.net > /dev/null; then
+              echo "✅ App is up!"
+              exit 0
+            fi
+            echo "App not ready yet. Retrying in 15s..."
+            sleep 15
+          done
+          echo "❌ App failed to respond after several attempts."
+          exit 1
