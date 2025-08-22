@@ -69,6 +69,6 @@ jobs:
 
       - name: 'Health Check - Verify App is Running'
         run: |
-          echo "Waiting 20s for app to boot..."
-          sleep 20
-          curl -f https://databasechatbot.azurewebsites.net || exit 1
+          echo "Waiting 60s for app to boot..."
+          sleep 60
+          curl -f https://databasechatbot-erg3hbcph9axfxfh.westus2-01.azurewebsites.net || exit 1
