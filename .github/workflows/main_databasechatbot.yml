@@ -1,3 +1,7 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+
 name: Build and deploy Python app to Azure Web App - databasechatbot
 
 on:
@@ -10,7 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: read #This is required for actions/checkout
 
     steps:
       - uses: actions/checkout@v4
@@ -24,9 +28,11 @@ jobs:
         run: |
           python -m venv venv
           source venv/bin/activate
-
+      
       - name: Install dependencies
         run: pip install -r requirements.txt
+        
+      # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
@@ -40,42 +46,26 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
-      id-token: write
-      contents: read
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
 
     steps:
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
           name: python-app
-
+      
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_CA90F5917EF7404C81EAE8CDC1B40151 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_F33A2920F99C48A0A6163139928B25F9 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_E71DFC08B0EB4927BA8649BC818F8EAA }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_8A945C8C1AF94C0FA2ADCE3E5DDCE0F3 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_FF3CA97742DA439D99D02547CCFF39C9 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_7C5D81D9FDB140039AED640D512DFDA4 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
           app-name: 'databasechatbot'
-          slot-name: 'production'
-          package: .
-          startup-command: 'gunicorn --bind=0.0.0.0 --timeout 600 app:app'
-
-      - name: 'Health Check - Verify App is Running'
-        run: |
-          echo "Waiting for app to boot..."
-          for i in {1..10}; do
-            echo "Attempt $i: Checking app health..."
-            if curl -fsS https://databasechatbot-erg3hbcph9axfxfh.westus2-01.azurewebsites.net > /dev/null; then
-              echo "✅ App is up!"
-              exit 0
-            fi
-            echo "App not ready yet. Retrying in 15s..."
-            sleep 15
-          done
-          echo "❌ App failed to respond after several attempts."
-          exit 1
+          slot-name: 'Production'
+          
